@@ -189,6 +189,12 @@
               <el-input-number v-model="configForm.delayMinutes" :min="0" :max="60" />
               <span style="font-size:12px;color:#909399;">建议5~10分钟，避免同步延迟误报</span>
             </el-form-item>
+            <el-form-item label="校验和分段大小">
+              <el-input-number v-model="configForm.segmentSize" :min="1000" :step="1000" :max="100000" />
+              <span style="font-size:12px;color:#909399;margin-left:8px;">
+                建议 5000~20000，过大影响内存，过小增加网络开销
+              </span>
+            </el-form-item>
           </el-col>
         </el-row>
         <el-form-item label="Cron 表达式">
@@ -318,6 +324,7 @@ export default {
           windowSize: 1,
           cronExpression: '0 0 * * * ?',
           diffThreshold: 1000,
+          segmentSize: 10000,
           enabled: true
         })
       }

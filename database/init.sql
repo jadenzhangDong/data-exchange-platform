@@ -451,3 +451,6 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 SELECT '✅ dex_platform 数据库初始化完成（含 Quartz 集群表）' AS Status;
 SELECT '📊 共创建 13 张业务表 + 1 张水位线表 + 1 张Worker状态表 + 11 张Quartz表' AS Info;
+
+ALTER TABLE reconciliation_config
+    ADD COLUMN segment_size INT DEFAULT 10000 COMMENT '校验和分段大小（行数）';
