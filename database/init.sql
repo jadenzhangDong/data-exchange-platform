@@ -1,18 +1,20 @@
 -- ============================================================
 -- 数据库: dex_platform
--- 说明: 全量初始化脚本（包含所有业务表 + Quartz 集群表）
--- 执行方式: mysql -u root -p < dex_platform_init.sql
--- 警告: 会删除已有表，请先备份数据！
+-- 说明: 数据交换平台完整建表脚本（含 Quartz 集群表）
+-- 字符集: utf8mb4
 -- ============================================================
+
+CREATE DATABASE IF NOT EXISTS `dex_platform`
+    DEFAULT CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+USE `dex_platform`;
 
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ============================================================
--- 1. 业务表
+-- 1. 数据源元数据
 -- ============================================================
-create database dex_platform;
-use dex_platform;
--- 1.1 数据源元数据
 DROP TABLE IF EXISTS `data_source_meta`;
 CREATE TABLE `data_source_meta` (
                                     `id` VARCHAR(32) NOT NULL COMMENT '主键ID',
@@ -28,14 +30,16 @@ CREATE TABLE `data_source_meta` (
                                     KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据源元数据';
 
--- 1.2 任务定义
+-- ============================================================
+-- 2. 任务定义
+-- ============================================================
 DROP TABLE IF EXISTS `task_definition`;
 CREATE TABLE `task_definition` (
                                    `task_id` VARCHAR(32) NOT NULL COMMENT '任务ID',
                                    `task_name` VARCHAR(100) NOT NULL COMMENT '任务名称',
-                                   `mode` VARCHAR(20) NOT NULL COMMENT '模式: ONESHOT, BATCH, SCHEDULED, STREAMING',
+                                   `mode` VARCHAR(20) NOT NULL COMMENT '模式: BATCH, STREAMING',
                                    `config_json` JSON NOT NULL COMMENT '完整的TaskConfig JSON',
-                                   `cron_expression` VARCHAR(50) DEFAULT NULL COMMENT 'Cron表达式（SCHEDULED模式使用）',
+                                   `cron_expression` VARCHAR(50) DEFAULT NULL COMMENT 'Cron表达式（BATCH定时模式使用）',
                                    `status` VARCHAR(20) DEFAULT 'ENABLED' COMMENT '状态: ENABLED, DISABLED',
                                    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                                    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -44,11 +48,15 @@ CREATE TABLE `task_definition` (
                                    KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务定义';
 
--- 1.3 任务实例
+-- ============================================================
+-- 3. 任务实例
+-- ============================================================
 DROP TABLE IF EXISTS `task_instance`;
 CREATE TABLE `task_instance` (
                                  `instance_id` VARCHAR(32) NOT NULL COMMENT '实例ID',
                                  `task_id` VARCHAR(32) NOT NULL COMMENT '任务ID',
+                                 `parent_instance_id` VARCHAR(32) DEFAULT NULL COMMENT '父实例ID（分片任务）',
+                                 `sub_task_index` INT DEFAULT 0 COMMENT '子任务索引',
                                  `state` VARCHAR(20) NOT NULL COMMENT '状态: PENDING, RUNNING, SUCCESS, FAILED, STOPPED',
                                  `assigned_worker_id` VARCHAR(100) DEFAULT NULL COMMENT '执行Worker ID',
                                  `start_time` DATETIME DEFAULT NULL COMMENT '开始时间',
@@ -59,10 +67,28 @@ CREATE TABLE `task_instance` (
                                  PRIMARY KEY (`instance_id`),
                                  KEY `idx_task_id` (`task_id`),
                                  KEY `idx_state` (`state`),
+                                 KEY `idx_parent_instance` (`parent_instance_id`),
                                  CONSTRAINT `fk_task_instance_task` FOREIGN KEY (`task_id`) REFERENCES `task_definition`(`task_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务实例';
 
--- 1.4 表结构元数据
+-- ============================================================
+-- 4. 任务日志（预留）
+-- ============================================================
+DROP TABLE IF EXISTS `task_log`;
+CREATE TABLE `task_log` (
+                            `id` BIGINT AUTO_INCREMENT COMMENT '自增主键',
+                            `instance_id` VARCHAR(32) NOT NULL COMMENT '任务实例ID',
+                            `level` VARCHAR(10) NOT NULL COMMENT '日志级别: INFO, WARN, ERROR',
+                            `message` TEXT NOT NULL COMMENT '日志内容',
+                            `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '记录时间',
+                            PRIMARY KEY (`id`),
+                            KEY `idx_instance_id` (`instance_id`),
+                            CONSTRAINT `fk_task_log_instance` FOREIGN KEY (`instance_id`) REFERENCES `task_instance`(`instance_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务日志';
+
+-- ============================================================
+-- 5. 表结构元数据
+-- ============================================================
 DROP TABLE IF EXISTS `table_meta`;
 CREATE TABLE `table_meta` (
                               `id` VARCHAR(32) NOT NULL COMMENT '主键ID',
@@ -79,7 +105,9 @@ CREATE TABLE `table_meta` (
                               CONSTRAINT `fk_table_meta_datasource` FOREIGN KEY (`data_source_id`) REFERENCES `data_source_meta`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='表结构元数据';
 
--- 1.5 字段映射规则
+-- ============================================================
+-- 6. 字段映射规则
+-- ============================================================
 DROP TABLE IF EXISTS `field_mapping_rule`;
 CREATE TABLE `field_mapping_rule` (
                                       `id` VARCHAR(32) NOT NULL COMMENT '主键ID',
@@ -97,14 +125,16 @@ CREATE TABLE `field_mapping_rule` (
                                       CONSTRAINT `fk_mapping_target` FOREIGN KEY (`target_table_id`) REFERENCES `table_meta`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='字段映射规则';
 
--- 1.6 任务模板
+-- ============================================================
+-- 7. 任务模板
+-- ============================================================
 DROP TABLE IF EXISTS `task_template`;
 CREATE TABLE `task_template` (
                                  `id` VARCHAR(32) NOT NULL COMMENT '主键ID',
                                  `name` VARCHAR(100) NOT NULL COMMENT '模板名称',
                                  `description` VARCHAR(255) DEFAULT NULL COMMENT '描述',
                                  `category` VARCHAR(50) DEFAULT NULL COMMENT '分类',
-                                 `mode` VARCHAR(20) NOT NULL COMMENT '任务模式: ONESHOT, BATCH, SCHEDULED, STREAMING',
+                                 `mode` VARCHAR(20) NOT NULL COMMENT '任务模式: BATCH, STREAMING',
                                  `source_template` JSON NOT NULL COMMENT 'Source插件配置模板',
                                  `sink_template` JSON NOT NULL COMMENT 'Sink插件配置模板',
                                  `transform_templates` JSON DEFAULT NULL COMMENT 'Transform插件配置模板列表',
@@ -117,7 +147,41 @@ CREATE TABLE `task_template` (
                                  KEY `idx_category` (`category`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务模板';
 
--- 1.7 核对配置
+-- ============================================================
+-- 8. 水位线表
+-- ============================================================
+DROP TABLE IF EXISTS `task_watermark`;
+CREATE TABLE `task_watermark` (
+                                  `id` VARCHAR(32) NOT NULL COMMENT '主键',
+                                  `task_id` VARCHAR(32) NOT NULL COMMENT '任务ID',
+                                  `source_table` VARCHAR(100) NOT NULL COMMENT '源表名',
+                                  `increment_column` VARCHAR(50) NOT NULL COMMENT '增量字段名',
+                                  `watermark_value` BIGINT NOT NULL COMMENT '水位线值（ID或时间戳毫秒）',
+                                  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                                  PRIMARY KEY (`id`),
+                                  UNIQUE KEY `uk_task_table_column` (`task_id`, `source_table`, `increment_column`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务水位线';
+
+-- ============================================================
+-- 9. Worker 状态持久化
+-- ============================================================
+DROP TABLE IF EXISTS `worker_state`;
+CREATE TABLE `worker_state` (
+                                `worker_id` VARCHAR(100) PRIMARY KEY COMMENT 'Worker ID',
+                                `host` VARCHAR(50) NOT NULL COMMENT '主机地址',
+                                `port` INT NOT NULL COMMENT 'HTTP端口',
+                                `grpc_port` INT DEFAULT 19090 COMMENT 'gRPC端口',
+                                `status` VARCHAR(20) DEFAULT 'ONLINE' COMMENT '状态: ONLINE, DRAINING, DISABLED, OFFLINE',
+                                `weight` INT DEFAULT 10 COMMENT '权重(1-100)',
+                                `tags` VARCHAR(200) DEFAULT '' COMMENT '标签，逗号分隔',
+                                `last_heartbeat` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后心跳时间',
+                                `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Worker状态持久化';
+
+-- ============================================================
+-- 10. 核对配置
+-- ============================================================
 DROP TABLE IF EXISTS `reconciliation_config`;
 CREATE TABLE `reconciliation_config` (
                                          `id` VARCHAR(32) NOT NULL COMMENT '主键ID',
@@ -130,18 +194,18 @@ CREATE TABLE `reconciliation_config` (
                                          `primary_key` VARCHAR(100) NOT NULL COMMENT '主键字段',
                                          `increment_column` VARCHAR(100) DEFAULT NULL COMMENT '增量字段',
                                          `increment_type` VARCHAR(20) DEFAULT 'TIMESTAMP' COMMENT '增量类型: TIMESTAMP, NUMBER',
-                                         `shard_size` BIGINT DEFAULT 1000000 COMMENT 'ID分片大小',
-                                         `check_strategy` VARCHAR(20) DEFAULT 'COUNT_CHECK' COMMENT '核对策略',
+                                         `shard_size` BIGINT DEFAULT 1000000 COMMENT 'ID分片大小（NUMBER类型）',
+                                         `check_strategy` VARCHAR(20) DEFAULT 'COUNT_CHECK' COMMENT '核对策略: COUNT_CHECK, FULL_CHECK, SAMPLE_CHECK',
                                          `window_unit` VARCHAR(10) DEFAULT 'HOUR' COMMENT '窗口单位: HOUR, DAY',
                                          `window_size` INT DEFAULT 1 COMMENT '窗口大小',
-                                         `delay_minutes` INT DEFAULT 0 COMMENT '延迟补偿',
+                                         `delay_minutes` INT DEFAULT 5 COMMENT '延迟补偿（分钟）',
                                          `cron_expression` VARCHAR(50) NOT NULL COMMENT 'Cron表达式',
                                          `enabled` TINYINT(1) DEFAULT 1 COMMENT '是否启用',
                                          `ext_condition` VARCHAR(500) DEFAULT NULL COMMENT '额外过滤条件',
                                          `compare_columns` TEXT DEFAULT NULL COMMENT '内容比对的列（逗号分隔）',
-                                         `sample_rate` DECIMAL(5,4) DEFAULT 1.0000 COMMENT '采样率',
+                                         `sample_rate` DECIMAL(5,4) DEFAULT 1.0000 COMMENT '采样率(0~1)',
                                          `extra_action` VARCHAR(20) DEFAULT 'IGNORE' COMMENT 'EXTRA数据处理: IGNORE, DELETE, REPORT',
-                                         `source_params` JSON DEFAULT NULL COMMENT '源端额外参数',
+                                         `source_params` JSON DEFAULT NULL COMMENT '源端额外参数（如Kafka topic/keyField）',
                                          `target_params` JSON DEFAULT NULL COMMENT '目标端额外参数',
                                          `diff_threshold` INT DEFAULT 1000 COMMENT '差异告警阈值',
                                          `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -154,7 +218,9 @@ CREATE TABLE `reconciliation_config` (
                                          CONSTRAINT `fk_reco_config_target` FOREIGN KEY (`target_data_source_id`) REFERENCES `data_source_meta`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='核对配置';
 
--- 1.8 核对实例
+-- ============================================================
+-- 11. 核对实例
+-- ============================================================
 DROP TABLE IF EXISTS `reconciliation_job`;
 CREATE TABLE `reconciliation_job` (
                                       `job_id` VARCHAR(32) NOT NULL COMMENT '实例ID',
@@ -166,8 +232,8 @@ CREATE TABLE `reconciliation_job` (
                                       `diff_count` BIGINT DEFAULT 0 COMMENT '差异总数',
                                       `source_missing_count` BIGINT DEFAULT 0 COMMENT '目标缺失数',
                                       `target_extra_count` BIGINT DEFAULT 0 COMMENT '目标多余数',
-                                      `processed_count` BIGINT DEFAULT 0 COMMENT '已处理记录数',
-                                      `total_count` BIGINT DEFAULT 0 COMMENT '总记录数',
+                                      `processed_count` BIGINT DEFAULT 0 COMMENT '已处理记录数（进度）',
+                                      `total_count` BIGINT DEFAULT 0 COMMENT '总记录数（估算）',
                                       `progress_percent` INT DEFAULT 0 COMMENT '进度百分比',
                                       `source_checksum_count` BIGINT DEFAULT 0 COMMENT '源端校验和数',
                                       `target_checksum_count` BIGINT DEFAULT 0 COMMENT '目标端校验和数',
@@ -184,7 +250,9 @@ CREATE TABLE `reconciliation_job` (
                                       CONSTRAINT `fk_reco_job_config` FOREIGN KEY (`config_id`) REFERENCES `reconciliation_config`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='核对实例';
 
--- 1.9 核对差异明细
+-- ============================================================
+-- 12. 核对差异明细
+-- ============================================================
 DROP TABLE IF EXISTS `reconciliation_diff`;
 CREATE TABLE `reconciliation_diff` (
                                        `id` BIGINT AUTO_INCREMENT COMMENT '自增主键',
@@ -204,7 +272,9 @@ CREATE TABLE `reconciliation_diff` (
                                        CONSTRAINT `fk_reco_diff_config` FOREIGN KEY (`config_id`) REFERENCES `reconciliation_config`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='核对差异明细';
 
--- 1.10 补偿记录（预留）
+-- ============================================================
+-- 13. 补偿记录（预留）
+-- ============================================================
 DROP TABLE IF EXISTS `reconciliation_compensation`;
 CREATE TABLE `reconciliation_compensation` (
                                                `id` VARCHAR(32) NOT NULL COMMENT '补偿ID',
@@ -220,26 +290,9 @@ CREATE TABLE `reconciliation_compensation` (
                                                CONSTRAINT `fk_compensation_diff` FOREIGN KEY (`diff_id`) REFERENCES `reconciliation_diff`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='补偿记录';
 
--- 1.11 任务日志（预留）
-DROP TABLE IF EXISTS `task_log`;
-CREATE TABLE `task_log` (
-                            `id` BIGINT AUTO_INCREMENT COMMENT '自增主键',
-                            `instance_id` VARCHAR(32) NOT NULL COMMENT '任务实例ID',
-                            `level` VARCHAR(10) NOT NULL COMMENT '日志级别: INFO, WARN, ERROR',
-                            `message` TEXT NOT NULL COMMENT '日志内容',
-                            `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '记录时间',
-                            PRIMARY KEY (`id`),
-                            KEY `idx_instance_id` (`instance_id`),
-                            CONSTRAINT `fk_task_log_instance` FOREIGN KEY (`instance_id`) REFERENCES `task_instance`(`instance_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务日志';
-
 -- ============================================================
--- 2. Quartz 集群表（标准表结构）
+-- 14. Quartz 集群表
 -- ============================================================
--- 如果你的 Quartz 表已存在且结构正确，可以跳过此部分。
--- 以下为标准 SQL，确保表结构与 Spring Boot Quartz 兼容。
--- ============================================================
-
 DROP TABLE IF EXISTS QRTZ_FIRED_TRIGGERS;
 DROP TABLE IF EXISTS QRTZ_PAUSED_TRIGGER_GRPS;
 DROP TABLE IF EXISTS QRTZ_SCHEDULER_STATE;
@@ -390,72 +443,11 @@ CREATE INDEX IDX_QRTZ_T_NFT_MISFIRE ON QRTZ_TRIGGERS(SCHED_NAME,MISFIRE_INSTR,NE
 CREATE INDEX IDX_QRTZ_T_NFT_ST_MISFIRE ON QRTZ_TRIGGERS(SCHED_NAME,MISFIRE_INSTR,NEXT_FIRE_TIME,TRIGGER_STATE);
 CREATE INDEX IDX_QRTZ_T_NFT_ST_MISFIRE_GRP ON QRTZ_TRIGGERS(SCHED_NAME,MISFIRE_INSTR,NEXT_FIRE_TIME,TRIGGER_GROUP,TRIGGER_STATE);
 
-SET FOREIGN_KEY_CHECKS = 1;
-
--- ============================================================
--- 3. 基础示例数据（可删除或修改）
--- ============================================================
-
--- 3.1 插入 Mock 数据源（用于测试）
-INSERT INTO `data_source_meta` (`id`, `name`, `type`, `description`, `config`, `status`)
-VALUES
-    ('ds-mock-001', 'Mock数据源', 'mock', '内置Mock数据源，无需真实连接', '{}', 'ONLINE');
-
--- 3.2 插入 JDBC 全量同步模板
-INSERT INTO `task_template` (`id`, `name`, `description`, `category`, `mode`, `source_template`, `sink_template`, `transform_templates`, `default_batch_size`)
-VALUES
-    ('tpl-jdbc-full-001', 'JDBC全量同步模板', '从JDBC源表全量同步到目标表', '数据库同步', 'BATCH',
-     '{"type":"jdbc-polling","params":{"url":"jdbc:mysql://localhost:3306/{{sourceSchema}}?useSSL=false","user":"root","password":"123456","table":"{{sourceTable}}","incrementColumn":"id","incrementType":"NUMBER","initialWatermark":0}}',
-     '{"type":"jdbc-polling","params":{"url":"jdbc:mysql://localhost:3306/{{targetSchema}}?useSSL=false","user":"root","password":"123456","table":"{{targetTable}}","primaryKey":"id"}}',
-     '[]',
-     1000);
-
--- 3.3 插入 JDBC 增量同步模板（时间戳）
-INSERT INTO `task_template` (`id`, `name`, `description`, `category`, `mode`, `source_template`, `sink_template`, `transform_templates`, `default_batch_size`)
-VALUES
-    ('tpl-jdbc-inc-001', 'JDBC增量同步模板', '基于时间戳的增量同步', '数据库同步', 'STREAMING',
-     '{"type":"jdbc-polling","params":{"url":"jdbc:mysql://localhost:3306/{{sourceSchema}}?useSSL=false","user":"root","password":"123456","table":"{{sourceTable}}","incrementColumn":"update_time","incrementType":"TIMESTAMP","initialWatermark":"1970-01-01 00:00:00"}}',
-     '{"type":"jdbc-polling","params":{"url":"jdbc:mysql://localhost:3306/{{targetSchema}}?useSSL=false","user":"root","password":"123456","table":"{{targetTable}}","primaryKey":"id"}}',
-     '[]',
-     1000);
-
--- 3.4 插入核对配置示例（需要先有对应的数据源和表，这里只作为模板，实际需要修改）
--- 注意：此配置依赖 data_source_meta 和 table_meta 中存在对应记录，这里只作为示例，暂不插入，因为缺少关联 ID。
-
--- 3.5 插入一个示例字段映射规则（MySQL 表字段映射）
-INSERT INTO `field_mapping_rule` (`id`, `name`, `description`, `mapping_json`)
-VALUES
-    ('map-001', '用户表字段映射', '将源表的 user_id, user_name 映射到目标表的 id, name',
-     '[{"source":"user_id","target":"id"},{"source":"user_name","target":"name"}]');
-
--- 3.6 插入一个示例核对配置（需修改数据源ID和表名后才可使用）
--- 注释掉，因为需要实际数据源ID
-
--- 将旧的 ONESHOT, BATCH, SCHEDULED 统一迁移为 BATCH
-UPDATE task_definition SET mode = 'BATCH' WHERE mode IN ('ONESHOT', 'BATCH', 'SCHEDULED');
--- 新增 scheduled 字段
-ALTER TABLE task_definition ADD COLUMN scheduled TINYINT(1) DEFAULT 0 COMMENT '是否定时触发';
-
--- 任务实例表增加分片相关字段
-ALTER TABLE task_instance ADD COLUMN parent_instance_id VARCHAR(32) DEFAULT NULL COMMENT '父实例ID（分片任务）';
-ALTER TABLE task_instance ADD COLUMN sub_task_index INT DEFAULT 0 COMMENT '子任务索引';
-
-CREATE TABLE IF NOT EXISTS `task_watermark` (
-                                                `id` VARCHAR(32) NOT NULL COMMENT '主键',
-                                                `task_id` VARCHAR(32) NOT NULL COMMENT '任务ID',
-                                                `source_table` VARCHAR(100) NOT NULL COMMENT '源表名',
-                                                `increment_column` VARCHAR(50) NOT NULL COMMENT '增量字段名',
-                                                `watermark_value` BIGINT NOT NULL COMMENT '水位线值（ID或时间戳毫秒）',
-                                                `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                                                PRIMARY KEY (`id`),
-                                                UNIQUE KEY `uk_task_table_column` (`task_id`, `source_table`, `increment_column`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务水位线';
-
-ALTER TABLE reconciliation_config
-    ADD COLUMN delay_minutes INT DEFAULT 5 COMMENT '延迟补偿（分钟），避免同步延迟误报';
-
-
 -- ============================================================
 -- 完成
 -- ============================================================
-SELECT '初始化完成！' AS Status;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+SELECT '✅ dex_platform 数据库初始化完成（含 Quartz 集群表）' AS Status;
+SELECT '📊 共创建 13 张业务表 + 1 张水位线表 + 1 张Worker状态表 + 11 张Quartz表' AS Info;
