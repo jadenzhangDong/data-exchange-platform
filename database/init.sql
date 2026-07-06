@@ -451,6 +451,10 @@ CREATE TABLE IF NOT EXISTS `task_watermark` (
                                                 UNIQUE KEY `uk_task_table_column` (`task_id`, `source_table`, `increment_column`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务水位线';
 
+ALTER TABLE reconciliation_config
+    ADD COLUMN delay_minutes INT DEFAULT 5 COMMENT '延迟补偿（分钟），避免同步延迟误报';
+
+
 -- ============================================================
 -- 完成
 -- ============================================================
