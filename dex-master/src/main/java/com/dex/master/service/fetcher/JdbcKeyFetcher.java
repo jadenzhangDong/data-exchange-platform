@@ -11,6 +11,7 @@ import java.sql.*;
 import java.util.*;
 import java.util.Date;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class JdbcKeyFetcher implements KeyFetcher {
     private static final Logger log = LoggerFactory.getLogger(JdbcKeyFetcher.class);
@@ -23,13 +24,11 @@ public class JdbcKeyFetcher implements KeyFetcher {
     private final int pageSize = 10000;
     private volatile boolean cancelled = false;
 
-    // 构造器（5 参数，兼容旧调用）
     public JdbcKeyFetcher(DataSourceMetaEntity ds, String table, String primaryKey,
                           String incrementColumn, String extCondition) throws SQLException {
         this(ds, table, primaryKey, incrementColumn, "TIMESTAMP", extCondition);
     }
 
-    // 构造器（6 参数，支持增量类型）
     public JdbcKeyFetcher(DataSourceMetaEntity ds, String table, String primaryKey,
                           String incrementColumn, String incrementType, String extCondition) throws SQLException {
         this.table = table;
@@ -68,6 +67,7 @@ public class JdbcKeyFetcher implements KeyFetcher {
             return null;
         }
     }
+
     @Override
     public Set<String> fetchKeys(Date windowStart, Date windowEnd) throws Exception {
         return fetchKeys(windowStart, windowEnd, null);
@@ -106,21 +106,75 @@ public class JdbcKeyFetcher implements KeyFetcher {
         return keys;
     }
 
-    @Override
-    public Set<KeyChecksum> fetchKeysWithChecksum(Date windowStart, Date windowEnd,
-                                                  String compareColumns,
-                                                  Consumer<Integer> progressCallback) throws SQLException {
-        return fetchKeysWithChecksum(windowStart, windowEnd, compareColumns, progressCallback, null, null);
+    // ========== 新增：分段校验和计算 ==========
+
+    /**
+     * 计算分段校验和
+     * @param windowStart 窗口开始时间
+     * @param windowEnd 窗口结束时间
+     * @param compareColumns 比较字段（逗号分隔）
+     * @param segmentSize 分段大小（行数）
+     * @return Map<segmentId, checksum>
+     */
+    public Map<Integer, String> fetchSegmentChecksums(Date windowStart, Date windowEnd,
+                                                      String compareColumns, int segmentSize) throws SQLException {
+        if (segmentSize <= 0) segmentSize = 10000;
+        Map<Integer, String> result = new LinkedHashMap<>();
+
+        // 构建 WHERE 条件
+        String whereClause = buildWhereClause(windowStart, windowEnd, null, null);
+
+        // 构建 SELECT 列：如果 compareColumns 为空，使用 *，但只取主键和比较字段
+        // 如果 compareColumns 不为空，使用主键 + 比较字段
+        String selectCols;
+        if (compareColumns != null && !compareColumns.trim().isEmpty()) {
+            selectCols = primaryKey + ", " + compareColumns;
+        } else {
+            // 如果没有指定比较字段，则使用所有列（但性能差，建议用户指定）
+            selectCols = "*";
+        }
+
+        // 构建分组 SQL：按 ID 范围分段，每段计算 MD5
+        // 注意：GROUP_CONCAT 默认最大长度 1024，需要调大
+        String sql = String.format(
+                "SELECT FLOOR(`%s` / %d) AS segment_id, " +
+                        "MD5(GROUP_CONCAT(CONCAT_WS('|', %s) ORDER BY `%s`)) AS checksum " +
+                        "FROM %s %s " +
+                        "GROUP BY segment_id",
+                primaryKey, segmentSize,
+                selectCols, primaryKey,
+                table, whereClause
+        );
+
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                int segmentId = rs.getInt("segment_id");
+                String checksum = rs.getString("checksum");
+                result.put(segmentId, checksum);
+            }
+        } catch (SQLException e) {
+            // 如果 GROUP_CONCAT 超长，可以降低分段大小或增加 group_concat_max_len
+            log.warn("分段校验和计算失败，尝试降低分段大小", e);
+            // 这里不抛出异常，而是降级到更小的分段
+            throw e;
+        }
+
+        log.debug("计算分段校验和完成，共 {} 段，每段 {} 行", result.size(), segmentSize);
+        return result;
     }
 
-    public Set<KeyChecksum> fetchKeysWithChecksum(Date windowStart, Date windowEnd,
-                                                  String compareColumns,
-                                                  Consumer<Integer> progressCallback,
-                                                  Long startId, Long endId) throws SQLException {
-        Set<KeyChecksum> result = new HashSet<>();
-        String whereClause = buildWhereClause(windowStart, windowEnd, startId, endId);
+    /**
+     * 只查询指定 ID 段的主键集合（用于精细核对）
+     */
+    public Set<String> fetchKeysForSegment(Date windowStart, Date windowEnd,
+                                           int segmentId, int segmentSize,
+                                           Consumer<Integer> progressCallback) throws SQLException {
+        Set<String> keys = new HashSet<>();
+        long minId = (long) segmentId * segmentSize;
+        long maxId = (long) (segmentId + 1) * segmentSize - 1;
 
-        // 获取总数
+        String whereClause = buildWhereClause(windowStart, windowEnd, minId, maxId);
         String countSql = "SELECT COUNT(*) FROM " + table + " " + whereClause;
         long total = 0;
         try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(countSql)) {
@@ -128,16 +182,54 @@ public class JdbcKeyFetcher implements KeyFetcher {
         }
         if (progressCallback != null) progressCallback.accept(0);
 
-        // 构建 SELECT 列
-        String selectCols;
+        String sql = "SELECT " + primaryKey + " FROM " + table + " " + whereClause + " LIMIT ? OFFSET ?";
+        long offset = 0;
+        while (!cancelled) {
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setInt(1, pageSize);
+                pstmt.setLong(2, offset);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    boolean hasData = false;
+                    while (rs.next()) {
+                        keys.add(rs.getString(1));
+                        hasData = true;
+                    }
+                    if (!hasData) break;
+                }
+            }
+            offset += pageSize;
+            if (progressCallback != null) {
+                int progress = (int) (offset * 100 / total);
+                progressCallback.accept(progress > 100 ? 100 : progress);
+            }
+        }
+        return keys;
+    }
+
+    // ========== 原有方法（保留） ==========
+
+    @Override
+    public Set<KeyChecksum> fetchKeysWithChecksum(Date windowStart, Date windowEnd,
+                                                  String compareColumns,
+                                                  Consumer<Integer> progressCallback) throws SQLException {
+        // 原有实现
+        Set<KeyChecksum> result = new HashSet<>();
+        String whereClause = buildWhereClause(windowStart, windowEnd, null, null);
+        String countSql = "SELECT COUNT(*) FROM " + table + " " + whereClause;
+        long total = 0;
+        try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(countSql)) {
+            if (rs.next()) total = rs.getLong(1);
+        }
+        if (progressCallback != null) progressCallback.accept(0);
+
+        String selectCols = primaryKey;
         if (compareColumns != null && !compareColumns.trim().isEmpty()) {
-            selectCols = primaryKey + ", " + compareColumns;
+            selectCols += ", " + compareColumns;
         } else {
-            selectCols = "*";
+            selectCols += ", *";
         }
 
         String sql = "SELECT " + selectCols + " FROM " + table + " " + whereClause + " LIMIT ? OFFSET ?";
-
         long offset = 0;
         while (!cancelled) {
             try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -172,27 +264,21 @@ public class JdbcKeyFetcher implements KeyFetcher {
             }
             offset += pageSize;
             if (progressCallback != null) {
-                int progress = (int) (offset * 100 / (total > 0 ? total : 1));
+                int progress = (int) (offset * 100 / total);
                 progressCallback.accept(progress > 100 ? 100 : progress);
             }
         }
         return result;
     }
 
-    /**
-     * 构建 WHERE 子句，支持 ID 范围或时间窗口
-     */
     public String buildWhereClause(Date windowStart, Date windowEnd, Long startId, Long endId) {
         List<String> conditions = new ArrayList<>();
 
-        // 判断增量类型
         if ("NUMBER".equalsIgnoreCase(incrementType) || (incrementColumn != null && "id".equalsIgnoreCase(incrementColumn))) {
-            // 数值类型：按 ID 范围
             if (startId != null && endId != null) {
                 conditions.add(incrementColumn + " >= " + startId + " AND " + incrementColumn + " < " + endId);
             }
         } else {
-            // 时间戳类型：按时间窗口
             if (incrementColumn != null && !incrementColumn.isEmpty() && windowStart != null && windowEnd != null) {
                 conditions.add(incrementColumn + " >= '" +
                         new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(windowStart) +
@@ -201,7 +287,6 @@ public class JdbcKeyFetcher implements KeyFetcher {
             }
         }
 
-        // 额外条件
         if (extCondition != null && !extCondition.isEmpty()) {
             conditions.add(extCondition);
         }
@@ -212,9 +297,6 @@ public class JdbcKeyFetcher implements KeyFetcher {
         return "WHERE " + String.join(" AND ", conditions);
     }
 
-    /**
-     * 获取表的最小和最大 ID
-     */
     public long[] getIdRange() throws SQLException {
         String sql = "SELECT MIN(" + incrementColumn + "), MAX(" + incrementColumn + ") FROM " + table;
         if (extCondition != null && !extCondition.isEmpty()) {

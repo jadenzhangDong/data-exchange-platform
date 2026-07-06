@@ -29,9 +29,11 @@ public class ReconciliationConfigEntity {
     @Column(name = "increment_column", length = 100)
     private String incrementColumn;
     @Column(name = "increment_type", length = 20)
-    private String incrementType;  // TIMESTAMP, NUMBER
+    private String incrementType;
     @Column(name = "shard_size")
-    private Long shardSize;        // ID分片大小，仅NUMBER类型有效
+    private Long shardSize;
+    @Column(name = "segment_size")
+    private Integer segmentSize = 10000;  // ✅ 新增：分段大小
     @Column(name = "check_strategy", length = 20)
     private String checkStrategy;
     @Column(name = "window_unit", length = 10)
