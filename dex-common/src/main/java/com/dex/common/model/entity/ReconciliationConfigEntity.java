@@ -39,7 +39,7 @@ public class ReconciliationConfigEntity {
     @Column(name = "window_size")
     private Integer windowSize;
     @Column(name = "delay_minutes")
-    private Integer delayMinutes;
+    private Integer delayMinutes = 5;
     @Column(name = "cron_expression", nullable = false, length = 50)
     private String cronExpression;
     @Column

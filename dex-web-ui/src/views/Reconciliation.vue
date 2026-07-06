@@ -185,6 +185,10 @@
             <el-form-item label="窗口大小">
               <el-input-number v-model="configForm.windowSize" :min="1" style="width:100%;" />
             </el-form-item>
+            <el-form-item label="延迟补偿(分钟)">
+              <el-input-number v-model="configForm.delayMinutes" :min="0" :max="60" />
+              <span style="font-size:12px;color:#909399;">建议5~10分钟，避免同步延迟误报</span>
+            </el-form-item>
           </el-col>
         </el-row>
         <el-form-item label="Cron 表达式">
@@ -249,7 +253,8 @@ export default {
       windowSize: 1,
       cronExpression: '0 0 * * * ?',
       diffThreshold: 1000,
-      enabled: true
+      enabled: true,
+      delayMinutes: 5,  // ✅ 默认延迟5分钟
     })
 
     // 执行记录

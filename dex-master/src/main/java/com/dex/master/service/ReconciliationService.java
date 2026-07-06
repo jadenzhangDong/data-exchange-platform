@@ -105,20 +105,31 @@ public class ReconciliationService {
     }
 
     // ========== 辅助方法（时间窗口） ==========
-
     private Date calculateWindowStart(Date now, ReconciliationConfigEntity config) {
         Calendar cal = Calendar.getInstance();
         cal.setTime(now);
-        if (config.getDelayMinutes() != null) {
+
+        // ✅ 第一步：扣除延迟补偿分钟
+        if (config.getDelayMinutes() != null && config.getDelayMinutes() > 0) {
             cal.add(Calendar.MINUTE, -config.getDelayMinutes());
+            log.debug("扣除延迟补偿 {} 分钟", config.getDelayMinutes());
         }
+
+        // 第二步：扣除窗口大小
         String unit = config.getWindowUnit() != null ? config.getWindowUnit() : "HOUR";
         int size = config.getWindowSize() != null ? config.getWindowSize() : 1;
         switch (unit.toUpperCase()) {
-            case "HOUR": cal.add(Calendar.HOUR, -size); break;
-            case "DAY": cal.add(Calendar.DAY_OF_MONTH, -size); break;
-            default: cal.add(Calendar.HOUR, -size);
+            case "HOUR":
+                cal.add(Calendar.HOUR, -size);
+                break;
+            case "DAY":
+                cal.add(Calendar.DAY_OF_MONTH, -size);
+                break;
+            default:
+                cal.add(Calendar.HOUR, -size);
+                break;
         }
+
         return cal.getTime();
     }
 
