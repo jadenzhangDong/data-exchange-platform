@@ -1,0 +1,50 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: dex-master
+  datasource:
+    url: jdbc:mysql://localhost:3306/dex_platform?useSSL=false&serverTimezone=UTC
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # Quartz 配置（完全依赖 Spring Boot 自动配置）
+    quartz:
+      job-store-type: jdbc          # 使用 JDBC 存储
+      jdbc:
+        initialize-schema: never    # 表已手动创建，不自动初始化
+      properties:
+        org.quartz.scheduler.instanceName: DexScheduler
+        org.quartz.scheduler.instanceId: AUTO
+        org.quartz.jobStore.class: org.quartz.impl.jdbcjobstore.JobStoreTX
+        org.quartz.jobStore.driverDelegateClass: org.quartz.impl.jdbcjobstore.StdJDBCDelegate
+        org.quartz.jobStore.tablePrefix: QRTZ_
+        org.quartz.jobStore.isClustered: true
+        org.quartz.jobStore.clusterCheckinInterval: 10000
+        org.quartz.jobStore.misfireThreshold: 60000
+        org.quartz.threadPool.class: org.quartz.simpl.SimpleThreadPool
+        org.quartz.threadPool.threadCount: 20
+        org.quartz.threadPool.threadPriority: 5
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+
+dex:
+  registry:
+    type: local   # 或 zk
+  communication:
+    protocol: grpc
+
+zk:
+  connect-string: localhost:2181
+
+logging:
+  file:
+    name: /Users/jadenzhang/logs/dex-master.log   # 指定绝对路径
+  level:
+    com.dex: DEBUG                     # 调试阶段可开启 DEBUG

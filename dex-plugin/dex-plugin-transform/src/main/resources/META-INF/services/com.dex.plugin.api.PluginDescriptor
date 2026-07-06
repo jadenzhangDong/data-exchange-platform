@@ -1,0 +1,5 @@
+com.dex.plugin.transform.FieldMapperDescriptor
+com.dex.plugin.transform.FilterDescriptor
+com.dex.plugin.transform.TypeConverterDescriptor
+com.dex.plugin.transform.FieldAddDescriptor
+com.dex.plugin.transform.FieldRemoveDescriptor

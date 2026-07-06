@@ -1,0 +1,31 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: dex-web
+  datasource:
+    url: jdbc:mysql://localhost:3306/dex_platform?useSSL=false&serverTimezone=UTC
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+
+dex:
+  registry:
+    type: local
+  master:
+    fallback-address: http://localhost:8080
+
+zk:
+  connect-string: localhost:2181
+
+logging:
+  level:
+    com.dex: DEBUG

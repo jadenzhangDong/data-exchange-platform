@@ -1,0 +1,31 @@
+syntax = "proto3";
+package com.dex.grpc;
+option java_package = "com.dex.grpc";
+option java_outer_classname = "TaskProto";
+
+service TaskService {
+  rpc Execute (TaskRequest) returns (TaskResponse);
+  rpc Stop (StopRequest) returns (StopResponse);
+}
+
+message TaskRequest {
+  string taskId = 1;
+  string instanceId = 2;
+  string mode = 3;
+  string configJson = 4;
+}
+
+message StopRequest {
+  string taskId = 1;
+  string instanceId = 2;
+}
+
+message TaskResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message StopResponse {
+  bool stopped = 1;
+  string message = 2;
+}

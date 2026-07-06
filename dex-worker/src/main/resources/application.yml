@@ -1,0 +1,43 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: dex-worker
+  datasource:
+    url: jdbc:mysql://localhost:3306/dex_platform?useSSL=false&serverTimezone=UTC
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+
+dex:
+  registry:
+    type: local
+  communication:
+    protocol: grpc
+  master:
+    address: http://localhost:8080
+
+worker:
+  port: ${server.port}
+  grpc:
+    port: 19090
+  weight: 10                # 权重 1-100，影响任务分发概率
+  tags: ""                  # 标签，逗号分隔，如 "prod,az1"
+
+grpc:
+  server:
+    port: ${worker.grpc.port}
+
+logging:
+  file:
+    name: /Users/jadenzhang/logs/dex-worker.log   # 指定绝对路径
+  level:
+    com.dex: DEBUG                     # 调试阶段可开启 DEBUG
