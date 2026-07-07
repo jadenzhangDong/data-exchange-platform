@@ -1,4 +1,4 @@
-package com.dex.master.service;
+package com.dex.master.scheduler;
 
 import com.dex.common.model.entity.TaskInstanceEntity;
 import com.dex.common.model.enums.TaskState;
