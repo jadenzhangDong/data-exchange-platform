@@ -37,7 +37,6 @@ public class BatchTaskExecutor {
 
         log.info("开始执行批处理任务: taskId={}, instanceId={}, mode={}", task.getTaskId(), instanceId, task.getMode());
 
-        // ✅ 传递 taskId 给 PluginManager
         Source<?> source = pluginManager.createSource(task.getSource(), task.getTaskId());
         Sink<?> sink = pluginManager.createSink(task.getSink());
 
@@ -46,8 +45,8 @@ public class BatchTaskExecutor {
         String errorMsg = null;
 
         try {
-            //source.open(task.getSource().getParams());
-            //sink.open(task.getSink().getParams());
+            source.open(task.getSource().getParams());
+            sink.open(task.getSink().getParams());
 
             while (running.get() && !Thread.currentThread().isInterrupted()) {
                 List<?> rawData = source.read(batchSize);
@@ -59,11 +58,13 @@ public class BatchTaskExecutor {
                 Sink<Object> objectSink = (Sink<Object>) sink;
                 objectSink.write((List<Object>) rawData);
 
-                // Sink 成功后立即提交水位线
                 source.commitWatermark();
 
                 total += rawData.size();
                 log.debug("批处理进度: taskId={}, 已处理={} 条", task.getTaskId(), total);
+
+                // ✅ 每批数据后上报心跳
+                reportHeartbeat(instanceId, total);
 
                 if (!"STREAMING".equals(task.getMode()) && rawData.size() < batchSize) {
                     break;
@@ -79,6 +80,21 @@ public class BatchTaskExecutor {
             runningFlags.remove(key);
             log.info("批处理任务结束: taskId={}, instanceId={}, total={}", task.getTaskId(), instanceId, total);
             notifyMaster(instanceId, errorMsg == null ? "SUCCESS" : "FAILED", total, errorMsg);
+        }
+    }
+
+    /**
+     * 上报任务心跳（在 Worker 端调用）
+     */
+    private void reportHeartbeat(String instanceId, long processed) {
+        try {
+            String url = masterAddress + "/api/master/task/heartbeat";
+            Map<String, Object> params = new HashMap<>();
+            params.put("instanceId", instanceId);
+            params.put("processedRecords", processed);
+            restTemplate.postForObject(url, params, String.class);
+        } catch (Exception e) {
+            log.warn("心跳上报失败: {}", e.getMessage());
         }
     }
 

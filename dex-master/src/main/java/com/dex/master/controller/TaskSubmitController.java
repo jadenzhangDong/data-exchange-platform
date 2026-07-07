@@ -8,12 +8,14 @@ import com.dex.common.repository.TaskInstanceRepository;
 import com.dex.common.util.JsonUtil;
 import com.dex.master.dispatch.TaskDispatcher;
 import com.dex.master.scheduler.DefaultTaskScheduler;
+import com.dex.master.service.TaskStateManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -31,6 +33,9 @@ public class TaskSubmitController {
 
     @Autowired
     private TaskDispatcher taskDispatcher;  // 注入任务分发器
+
+    @Autowired
+    private TaskStateManager taskStateManager;
 
     @PostMapping("/submit")
     public String submitTask(@RequestBody TaskConfig task) {
@@ -173,5 +178,13 @@ public class TaskSubmitController {
 
         log.info("任务已禁用: {}", taskId);
         return "任务已禁用";
+    }
+
+    @PostMapping("/task/heartbeat")
+    public String heartbeat(@RequestBody Map<String, String> params) {
+        String instanceId = params.get("instanceId");
+        Long processed = Long.parseLong(params.getOrDefault("processedRecords", "0"));
+        taskStateManager.heartbeat(instanceId, processed);
+        return "ok";
     }
 }
